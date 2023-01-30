@@ -13,11 +13,13 @@ if sly.is_development():
 
 
 STORAGE_DIR = sly.app.get_data_dir()
-ann_file = "labels.json"
+ANN_FILE = "labels.json"
 
 
-def download_project(api, project_name, project_id):
-    dataset_ids = [ds.id for ds in api.dataset.get_list(project_id)]
+def download_project(api, project_name, project_id, dataset_id):
+    dataset_ids = None
+    if dataset_id is not None:
+        dataset_ids = [dataset_id]
     sly.logger.info("DOWNLOAD_PROJECT", extra={"title": project_name})
     dest_dir = join(STORAGE_DIR, f"{project_id}_{project_name}")
     sly.download_project(api, project_id, dest_dir, dataset_ids=dataset_ids, log_progress=True)
@@ -34,25 +36,14 @@ class MyExport(sly.app.Export):
 
         api = sly.Api.from_env()
         project_info = api.project.get_info_by_id(id=context.project_id)
-        project_dir = download_project(api, project_info.name, project_info.id)
+        project_dir = download_project(api, project_info.name, project_info.id, context.dataset_id)
 
         project = sly.Project(directory=project_dir, mode=sly.OpenMode.READ)
 
-        if context.dataset_id is not None:
-            ds_name = api.dataset.get_info_by_id(id=context.dataset_id).name
-            converting_data = [
-                sly.Dataset(
-                    join(project_dir, ds_name),
-                    mode=sly.OpenMode.READ,
-                )
-            ]
-        else:
-            converting_data = project
-
-        for dataset in converting_data:
+        for dataset in project:
             result_anns = {}
             ds_progress = sly.Progress(
-                "Processing dataset: {!r}/{!r}".format(project.name, dataset.name),
+                f"Processing dataset: '{dataset.name}'",
                 total_cnt=len(dataset),
             )
             for item_name in dataset:
@@ -78,7 +69,7 @@ class MyExport(sly.app.Export):
                         )
 
                 result_anns[item_name] = curr_labels
-            dump_json_file(result_anns, join(dataset.directory, ann_file), indent=2)
+            dump_json_file(result_anns, join(dataset.directory, ANN_FILE), indent=2)
 
             remove_dir(dataset.img_dir)
             remove_dir(dataset.ann_dir)
@@ -88,12 +79,12 @@ class MyExport(sly.app.Export):
         silent_remove(join(project_dir, "meta.json"))
         sly.logger.info("Finished converting.".format(project_info.name))
 
-        full_archive_name = str(project_info.id) + "_" + project_info.name + ".tar"
-        result_archive = join(STORAGE_DIR, full_archive_name)
-        sly.fs.archive_directory(project_dir, result_archive)
+        full_archive_name = str(project_info.id) + "_" + f"{project_info.name}.tar"
+        result_archive_path = join(STORAGE_DIR, full_archive_name)
+        sly.fs.archive_directory(project_dir, result_archive_path)
         sly.logger.info("Result directory is archived")
 
-        return result_archive
+        return result_archive_path
 
 
 app = MyExport()
