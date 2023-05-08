@@ -1,61 +1,80 @@
-import os
-
+import json, os
 import supervisely as sly
-import json
-from os.path import join
 
 from dotenv import load_dotenv
+from tqdm import tqdm
 
 # load ENV variables for debug, has no effect in production
 load_dotenv("local.env")
 load_dotenv(os.path.expanduser("~/supervisely.env"))
 
+api = sly.Api.from_env()
 
-STORAGE_DIR = sly.app.get_data_dir()
-ANN_FILE = "labels.json"
+TASK_ID = sly.env.task_id()
+TEAM_ID = sly.env.team_id()
+WORKSPACE_ID = sly.env.workspace_id()
+PROJECT_ID = sly.env.project_id()
+DATASET_ID = sly.env.dataset_id(raise_not_found=False)
+IS_PRODUCTION = sly.is_production()
 
 
-class MyExport(sly.app.Export):
-    def process(self, context: sly.app.Export.Context):
-        # create api object to communicate with Supervisely Server
-        api = sly.Api.from_env()
+STORAGE_DIR = sly.app.get_data_dir()  # path to directory for temp files and result archive
+PROJECT_DIR = os.path.join(STORAGE_DIR, str(PROJECT_ID))  # project directory path
+sly.io.fs.mkdir(PROJECT_DIR, True)
+ANN_FILE_NAME = "labels.json"
 
-        # get project info from server
-        project_info = api.project.get_info_by_id(id=context.project_id)
 
-        # make project directory path
-        data_dir = join(STORAGE_DIR, f"{project_info.id}_{project_info.name}")
+app = sly.Application() # run app
 
-        # get project meta
-        meta_json = api.project.get_meta(id=context.project_id)
-        project_meta = sly.ProjectMeta.from_json(meta_json)
+# get project info from server
+project_info = api.project.get_info_by_id(id=PROJECT_ID)
 
-        # get datasets info from server
-        dataset_infos = api.dataset.get_list(project_id=context.project_id)
+if project_info is None:
+    raise ValueError(
+        f"Project with ID: '{PROJECT_ID}' either doesn't exist, archived or you don't have access to it"
+    )
+sly.logger.info(
+    f"Exporting Project: id={project_info.id}, name={project_info.name}, type={project_info.type}",
+)
 
-        # iterate over datasets in project
-        for dataset in dataset_infos:
-            result_anns = {}
+meta_json = api.project.get_meta(id=PROJECT_ID)
+project_meta = sly.ProjectMeta.from_json(meta_json)
 
-            # create Progress object to track progress
-            ds_progress = sly.Progress(
-                f"Processing dataset: '{dataset.name}'",
-                total_cnt=dataset.images_count,
-            )
+# Check if the app runs from the context menu of the dataset.
+if DATASET_ID is not None:
+    # If so, get the dataset info from the server.
+    dataset_infos = [api.dataset.get_info_by_id(DATASET_ID)]
+    if dataset_infos is None:
+        raise ValueError(
+            f"Dataset with ID: '{DATASET_ID}' either doesn't exist, archived or you don't have access to it"
+        )
+    sly.logger.info(f"Exporting Dataset: id={dataset_infos[0].id}, name={dataset_infos[0].name}")
+else:
+    # If it does not, obtain all datasets infos from the current project.
+    dataset_infos = api.dataset.get_list(PROJECT_ID)
+    sly.logger.info(f"Exporting all datasets from project.")
 
-            # get dataset images info
-            images = api.image.get_list(dataset.id)
+# track progress datasets processing using Tqdm
+with tqdm(total=len(dataset_infos)) as ds_pbar:
+    # iterate over datasets in project
+    for dataset in dataset_infos:
+        result_anns = {}
 
+        # get dataset images info
+        images_infos = api.image.get_list(dataset.id)
+
+        # track progress using Tqdm
+        with tqdm(total=dataset.items_count) as pbar:
             # iterate over images in dataset
-            for image in images:
+            for image_info in images_infos:
                 labels = []
 
-                # create path for eaach image and download it from server
-                image_path = join(data_dir, dataset.name, image.name)
-                api.image.download(image.id, image_path)
+                # create path for each image and download it from server
+                image_path = os.path.join(PROJECT_DIR, dataset.name, image_info.name)
+                api.image.download(image_info.id, image_path)
 
                 # download annotation for current image
-                ann_json = api.annotation.download_json(image.id)
+                ann_json = api.annotation.download_json(image_info.id)
                 ann = sly.Annotation.from_json(ann_json, project_meta)
 
                 # iterate over labels in current annotation
@@ -77,18 +96,50 @@ class MyExport(sly.app.Export):
                         }
                     )
 
-                result_anns[image.name] = labels
+                result_anns[image_info.name] = labels
 
-                # increment the current progress counter by 1
-                ds_progress.iter_done_report()
+                # increment the current images progress counter by 1
+                pbar.update(1)
+        # increment the current dataset progress counter by 1
+        ds_pbar.update(1)
 
-            # create JSON annotation in new format
-            filename = join(data_dir, dataset.name, ANN_FILE)
-            with open(filename, "w") as fout:
-                json.dump(result_anns, fout, indent=2)
+        # create JSON annotation in new format
+        filename = os.path.join(PROJECT_DIR, dataset.name, ANN_FILE_NAME)
+        with open(filename, "w") as file:
+            json.dump(result_anns, file, indent=2)
 
-        return data_dir
+# prepare archive from result project dir
+archive_path = f"{PROJECT_DIR}.tar"
+sly.fs.archive_directory(PROJECT_DIR, archive_path)
+sly.fs.remove_dir(PROJECT_DIR)
+PROJECT_DIR = archive_path
 
+# upload project to Supervsiely in production mode 
+if IS_PRODUCTION:
+    progress = tqdm(
+        desc=f"Uploading '{os.path.basename(PROJECT_DIR)}'",
+        total=sly.fs.get_directory_size(PROJECT_DIR),
+        unit="B",
+        unit_scale=True,
+    )
+        
+    remote_path = os.path.join(
+        sly.team_files.RECOMMENDED_EXPORT_PATH,
+        "Supervisely App",
+        str(TASK_ID),
+        f"{sly.fs.get_file_name_with_ext(PROJECT_DIR)}",
+    )
 
-app = MyExport()
-app.run()
+    file_info = api.file.upload(
+        team_id=TEAM_ID,
+        src=PROJECT_DIR,
+        dst=remote_path,
+        progress_cb=progress,
+    )
+    api.task.set_output_archive(
+        task_id=TASK_ID, file_id=file_info.id, file_name=file_info.name
+    )
+    sly.logger.info(f"Remote file: id={file_info.id}, name={file_info.name}")
+    sly.fs.silent_remove(PROJECT_DIR) # remove local directory
+
+app.shutdown() # stop app
