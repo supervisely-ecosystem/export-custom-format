@@ -1,26 +1,17 @@
 {
-  "name": "Export custom format",
-  "type": "app",
-  "categories": ["images", "export"],
-  "description": "For semantic and instance segmentation tasks",
-  "docker_image": "supervisely/base-py-sdk:6.69.16",
-  "instance_version": "6.5.1",
-  "main_script": "src/main.py",
-  "modal_template_state": {
-    "humanMasks": true,
-    "machineMasks": true,
-    "instanceMasks": false,
-    "thickness": 2
-  },
-  "task_location": "workspace_tasks",
-  "icon": "https://i.imgur.com/Dz0f248.png",
-  "icon_background": "#FFFFFF",
+  "name": "Custom Export app",
+  "description": "Demonstrates how to make custom export supervisely app",
+  "categories": ["development"],
   "headless": true,
-  "release": { "version": "v0.0.7", "name": "init" },
-  "slug": "sl/export-custom-format",
+  "version": "2.0.0",
+  "icon": "",
+  "poster": "",
   "context_menu": {
-    "target": ["images_project", "images_dataset"],
-    "context_root": "Download as"
+    "context_category": "Export",
+    "target": ["images_project", "images_dataset"]
   },
-  "poster": "https://user-images.githubusercontent.com/106374579/186664538-21e06509-7372-44db-9f0e-512be05cad91.png"
+  "min_agent_version": "6.7.4",
+  "min_instance_version": "6.5.51",
+  "entrypoint": "python -m uvicorn src.main:app --host 0.0.0.0 --port 8000",
+  "port": 8000
 }

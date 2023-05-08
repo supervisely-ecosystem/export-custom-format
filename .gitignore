@@ -1,8 +1,5 @@
-secret_debug.env
-src/debug
-debug
-.idea
 .venv
 supervisely
 __pycache__
-.vscode
+.DS_Store
+results/
